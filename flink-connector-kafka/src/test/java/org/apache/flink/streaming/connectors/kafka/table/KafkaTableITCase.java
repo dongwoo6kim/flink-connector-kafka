@@ -43,6 +43,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.assertj.core.api.Assertions;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
@@ -54,12 +55,14 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -74,6 +77,10 @@ import static org.apache.flink.util.CollectionUtil.map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 import static org.assertj.core.api.HamcrestCondition.matching;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Timeout.ThreadMode.INFERRED;
+import static org.junit.jupiter.api.Timeout.ThreadMode.SAME_THREAD;
+import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
 
 /** Basic IT cases for the Kafka table source and sink. */
 @RunWith(Parameterized.class)
@@ -83,7 +90,8 @@ public class KafkaTableITCase extends KafkaTableTestBase {
     private static final String AVRO_FORMAT = "avro";
     private static final String CSV_FORMAT = "csv";
 
-    @Parameterized.Parameter public String format;
+    @Parameterized.Parameter
+    public String format;
 
     @Parameterized.Parameters(name = "format = {0}")
     public static Collection<String> parameters() {
@@ -111,22 +119,22 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         final String createTable =
                 String.format(
                         "create table kafka (\n"
-                                + "  `computed-price` as price + 1.0,\n"
-                                + "  price decimal(38, 18),\n"
-                                + "  currency string,\n"
-                                + "  log_date date,\n"
-                                + "  log_time time(3),\n"
-                                + "  log_ts timestamp(3),\n"
-                                + "  ts as log_ts + INTERVAL '1' SECOND,\n"
-                                + "  watermark for ts as ts\n"
-                                + ") with (\n"
-                                + "  'connector' = '%s',\n"
-                                + "  'topic' = '%s',\n"
-                                + "  'properties.bootstrap.servers' = '%s',\n"
-                                + "  'properties.group.id' = '%s',\n"
-                                + "  'scan.startup.mode' = 'earliest-offset',\n"
-                                + "  %s\n"
-                                + ")",
+                        + "  `computed-price` as price + 1.0,\n"
+                        + "  price decimal(38, 18),\n"
+                        + "  currency string,\n"
+                        + "  log_date date,\n"
+                        + "  log_time time(3),\n"
+                        + "  log_ts timestamp(3),\n"
+                        + "  ts as log_ts + INTERVAL '1' SECOND,\n"
+                        + "  watermark for ts as ts\n"
+                        + ") with (\n"
+                        + "  'connector' = '%s',\n"
+                        + "  'topic' = '%s',\n"
+                        + "  'properties.bootstrap.servers' = '%s',\n"
+                        + "  'properties.group.id' = '%s',\n"
+                        + "  'scan.startup.mode' = 'earliest-offset',\n"
+                        + "  %s\n"
+                        + ")",
                         KafkaDynamicTableFactory.IDENTIFIER,
                         topic,
                         bootstraps,
@@ -137,29 +145,29 @@ public class KafkaTableITCase extends KafkaTableTestBase {
 
         String initialValues =
                 "INSERT INTO kafka\n"
-                        + "SELECT CAST(price AS DECIMAL(10, 2)), currency, "
-                        + " CAST(d AS DATE), CAST(t AS TIME(0)), CAST(ts AS TIMESTAMP(3))\n"
-                        + "FROM (VALUES (2.02,'Euro','2019-12-12', '00:00:01', '2019-12-12 00:00:01.001001'), \n"
-                        + "  (1.11,'US Dollar','2019-12-12', '00:00:02', '2019-12-12 00:00:02.002001'), \n"
-                        + "  (50,'Yen','2019-12-12', '00:00:03', '2019-12-12 00:00:03.004001'), \n"
-                        + "  (3.1,'Euro','2019-12-12', '00:00:04', '2019-12-12 00:00:04.005001'), \n"
-                        + "  (5.33,'US Dollar','2019-12-12', '00:00:05', '2019-12-12 00:00:05.006001'), \n"
-                        + "  (0,'DUMMY','2019-12-12', '00:00:10', '2019-12-12 00:00:10'))\n"
-                        + "  AS orders (price, currency, d, t, ts)";
+                + "SELECT CAST(price AS DECIMAL(10, 2)), currency, "
+                + " CAST(d AS DATE), CAST(t AS TIME(0)), CAST(ts AS TIMESTAMP(3))\n"
+                + "FROM (VALUES (2.02,'Euro','2019-12-12', '00:00:01', '2019-12-12 00:00:01.001001'), \n"
+                + "  (1.11,'US Dollar','2019-12-12', '00:00:02', '2019-12-12 00:00:02.002001'), \n"
+                + "  (50,'Yen','2019-12-12', '00:00:03', '2019-12-12 00:00:03.004001'), \n"
+                + "  (3.1,'Euro','2019-12-12', '00:00:04', '2019-12-12 00:00:04.005001'), \n"
+                + "  (5.33,'US Dollar','2019-12-12', '00:00:05', '2019-12-12 00:00:05.006001'), \n"
+                + "  (0,'DUMMY','2019-12-12', '00:00:10', '2019-12-12 00:00:10'))\n"
+                + "  AS orders (price, currency, d, t, ts)";
         tEnv.executeSql(initialValues).await();
 
         // ---------- Consume stream from Kafka -------------------
 
         String query =
                 "SELECT\n"
-                        + "  CAST(TUMBLE_END(ts, INTERVAL '5' SECOND) AS VARCHAR),\n"
-                        + "  CAST(MAX(log_date) AS VARCHAR),\n"
-                        + "  CAST(MAX(log_time) AS VARCHAR),\n"
-                        + "  CAST(MAX(ts) AS VARCHAR),\n"
-                        + "  COUNT(*),\n"
-                        + "  CAST(MAX(price) AS DECIMAL(10, 2))\n"
-                        + "FROM kafka\n"
-                        + "GROUP BY TUMBLE(ts, INTERVAL '5' SECOND)";
+                + "  CAST(TUMBLE_END(ts, INTERVAL '5' SECOND) AS VARCHAR),\n"
+                + "  CAST(MAX(log_date) AS VARCHAR),\n"
+                + "  CAST(MAX(log_time) AS VARCHAR),\n"
+                + "  CAST(MAX(ts) AS VARCHAR),\n"
+                + "  COUNT(*),\n"
+                + "  CAST(MAX(price) AS DECIMAL(10, 2))\n"
+                + "FROM kafka\n"
+                + "GROUP BY TUMBLE(ts, INTERVAL '5' SECOND)";
 
         DataStream<RowData> result = tEnv.toAppendStream(tEnv.sqlQuery(query), RowData.class);
         TestingSinkFunction sink = new TestingSinkFunction(2);
@@ -202,19 +210,19 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         final String createTable =
                 String.format(
                         "CREATE TABLE kafka (\n"
-                                + "  `user_id` INT,\n"
-                                + "  `item_id` INT,\n"
-                                + "  `behavior` STRING\n"
-                                + ") WITH (\n"
-                                + "  'connector' = '%s',\n"
-                                + "  'topic' = '%s',\n"
-                                + "  'properties.bootstrap.servers' = '%s',\n"
-                                + "  'properties.group.id' = '%s',\n"
-                                + "  'scan.startup.mode' = 'earliest-offset',\n"
-                                + "  'scan.bounded.mode' = 'specific-offsets',\n"
-                                + "  'scan.bounded.specific-offsets' = 'partition:0,offset:2',\n"
-                                + "  %s\n"
-                                + ")\n",
+                        + "  `user_id` INT,\n"
+                        + "  `item_id` INT,\n"
+                        + "  `behavior` STRING\n"
+                        + ") WITH (\n"
+                        + "  'connector' = '%s',\n"
+                        + "  'topic' = '%s',\n"
+                        + "  'properties.bootstrap.servers' = '%s',\n"
+                        + "  'properties.group.id' = '%s',\n"
+                        + "  'scan.startup.mode' = 'earliest-offset',\n"
+                        + "  'scan.bounded.mode' = 'specific-offsets',\n"
+                        + "  'scan.bounded.specific-offsets' = 'partition:0,offset:2',\n"
+                        + "  %s\n"
+                        + ")\n",
                         KafkaDynamicTableFactory.IDENTIFIER,
                         topic,
                         bootstraps,
@@ -243,6 +251,61 @@ public class KafkaTableITCase extends KafkaTableTestBase {
     }
 
     @Test
+    public void testKafkaSourceSinkWithBoundedNoRecords() throws Exception {
+        // we always use a different topic name for each parameterized topic,
+        // in order to make sure the topic can be created.
+        final String topic = "bounded_" + format + "_" + UUID.randomUUID();
+        createTestTopic(topic, 1, 1);
+        // ---------- Produce an event time stream into Kafka -------------------
+        String groupId = getStandardProps().getProperty("group.id");
+        String bootstraps = getBootstrapServers();
+
+        final String createTable =
+                String.format(
+                        "CREATE TABLE kafka (\n"
+                        + "  `user_id` INT,\n"
+                        + "  `item_id` INT,\n"
+                        + "  `behavior` STRING\n"
+                        + ") WITH (\n"
+                        + "  'connector' = '%s',\n"
+                        + "  'topic' = '%s',\n"
+                        + "  'properties.bootstrap.servers' = '%s',\n"
+                        + "  'properties.group.id' = '%s',\n"
+                        + "  'scan.startup.mode' = 'specific-offsets',\n"
+                        + "  'scan.bounded.mode' = 'specific-offsets',\n"
+                        + "  'scan.startup.specific-offsets' = 'partition:0,offset:1',\n"
+                        + "  'scan.bounded.specific-offsets' = 'partition:0,offset:3',\n"
+                        + "  %s\n"
+                        + ")\n",
+                        KafkaDynamicTableFactory.IDENTIFIER,
+                        topic,
+                        bootstraps,
+                        groupId,
+                        formatOptions());
+        tEnv.executeSql(createTable);
+        List<Row> values =
+                Arrays.asList(
+                        Row.of(1, 1102, "behavior 1"),
+                        Row.of(2, 1103, "behavior 2"),
+                        Row.of(3, 1104, "behavior 3"));
+        tEnv.fromValues(values).insertInto("kafka").execute().await();
+        // ---------- Consume stream from Kafka -------------------
+        Map<Integer, Long> deleteInfo = new HashMap<>();
+        deleteInfo.put(0, 3L);
+        deleteRecords(topic, deleteInfo);
+        List<Row> results = assertTimeoutPreemptively(
+                Duration.ofSeconds(5),
+                () -> collectAllRows(tEnv.sqlQuery("SELECT * from kafka"))
+        );
+        System.out.println(results);
+        assertThat(results.isEmpty()).isTrue();
+
+        // ------------- cleanup -------------------
+
+        deleteTestTopic(topic);
+    }
+
+    @Test
     public void testKafkaSourceSinkWithBoundedTimestamp() throws Exception {
         // we always use a different topic name for each parameterized topic,
         // in order to make sure the topic can be created.
@@ -256,20 +319,20 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         final String createTable =
                 String.format(
                         "CREATE TABLE kafka (\n"
-                                + "  `user_id` INT,\n"
-                                + "  `item_id` INT,\n"
-                                + "  `behavior` STRING,\n"
-                                + "  `event_time` TIMESTAMP_LTZ(3) METADATA FROM 'timestamp'"
-                                + ") WITH (\n"
-                                + "  'connector' = '%s',\n"
-                                + "  'topic' = '%s',\n"
-                                + "  'properties.bootstrap.servers' = '%s',\n"
-                                + "  'properties.group.id' = '%s',\n"
-                                + "  'scan.startup.mode' = 'earliest-offset',\n"
-                                + "  'scan.bounded.mode' = 'timestamp',\n"
-                                + "  'scan.bounded.timestamp-millis' = '5',\n"
-                                + "  %s\n"
-                                + ")\n",
+                        + "  `user_id` INT,\n"
+                        + "  `item_id` INT,\n"
+                        + "  `behavior` STRING,\n"
+                        + "  `event_time` TIMESTAMP_LTZ(3) METADATA FROM 'timestamp'"
+                        + ") WITH (\n"
+                        + "  'connector' = '%s',\n"
+                        + "  'topic' = '%s',\n"
+                        + "  'properties.bootstrap.servers' = '%s',\n"
+                        + "  'properties.group.id' = '%s',\n"
+                        + "  'scan.startup.mode' = 'earliest-offset',\n"
+                        + "  'scan.bounded.mode' = 'timestamp',\n"
+                        + "  'scan.bounded.timestamp-millis' = '5',\n"
+                        + "  %s\n"
+                        + ")\n",
                         KafkaDynamicTableFactory.IDENTIFIER,
                         topic,
                         bootstraps,
@@ -304,42 +367,42 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         // ---------- create source and sink tables -------------------
         String tableTemp =
                 "create table %s (\n"
-                        + "  currency string\n"
-                        + ") with (\n"
-                        + "  'connector' = '%s',\n"
-                        + "  'topic' = '%s',\n"
-                        + "  'properties.bootstrap.servers' = '%s',\n"
-                        + "  'properties.group.id' = '%s',\n"
-                        + "  'scan.startup.mode' = 'earliest-offset',\n"
-                        + "  %s\n"
-                        + ")";
+                + "  currency string\n"
+                + ") with (\n"
+                + "  'connector' = '%s',\n"
+                + "  'topic' = '%s',\n"
+                + "  'properties.bootstrap.servers' = '%s',\n"
+                + "  'properties.group.id' = '%s',\n"
+                + "  'scan.startup.mode' = 'earliest-offset',\n"
+                + "  %s\n"
+                + ")";
         String groupId = getStandardProps().getProperty("group.id");
         String bootstraps = getBootstrapServers();
         List<String> currencies = Arrays.asList("Euro", "Dollar", "Yen", "Dummy");
         List<String> topics =
                 currencies.stream()
-                        .map(
-                                currency ->
-                                        String.format(
-                                                "%s_%s_%s", currency, format, UUID.randomUUID()))
-                        .collect(Collectors.toList());
+                          .map(
+                                  currency ->
+                                          String.format(
+                                                  "%s_%s_%s", currency, format, UUID.randomUUID()))
+                          .collect(Collectors.toList());
         // Because kafka connector currently doesn't support write data into multiple topic
         // together,
         // we have to create multiple sink tables.
         IntStream.range(0, 4)
-                .forEach(
-                        index -> {
-                            createTestTopic(topics.get(index), 1, 1);
-                            tEnv.executeSql(
-                                    String.format(
-                                            tableTemp,
-                                            currencies.get(index).toLowerCase(),
-                                            KafkaDynamicTableFactory.IDENTIFIER,
-                                            topics.get(index),
-                                            bootstraps,
-                                            groupId,
-                                            formatOptions()));
-                        });
+                 .forEach(
+                         index -> {
+                             createTestTopic(topics.get(index), 1, 1);
+                             tEnv.executeSql(
+                                     String.format(
+                                             tableTemp,
+                                             currencies.get(index).toLowerCase(),
+                                             KafkaDynamicTableFactory.IDENTIFIER,
+                                             topics.get(index),
+                                             bootstraps,
+                                             groupId,
+                                             formatOptions()));
+                         });
         // create source table
         tEnv.executeSql(
                 String.format(
@@ -354,14 +417,14 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         // ---------- Prepare data in Kafka topics -------------------
         String insertTemp =
                 "INSERT INTO %s\n"
-                        + "SELECT currency\n"
-                        + " FROM (VALUES ('%s'))\n"
-                        + " AS orders (currency)";
+                + "SELECT currency\n"
+                + " FROM (VALUES ('%s'))\n"
+                + " AS orders (currency)";
         currencies.forEach(
                 currency -> {
                     try {
                         tEnv.executeSql(String.format(insertTemp, currency.toLowerCase(), currency))
-                                .await();
+                            .await();
                     } catch (Exception e) {
                         fail(e.getMessage());
                     }
@@ -406,34 +469,34 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         final String createTable =
                 String.format(
                         "CREATE TABLE kafka (\n"
-                                + "  `physical_1` STRING,\n"
-                                + "  `physical_2` INT,\n"
-                                // metadata fields are out of order on purpose
-                                // offset is ignored because it might not be deterministic
-                                + "  `timestamp-type` STRING METADATA VIRTUAL,\n"
-                                + "  `timestamp` TIMESTAMP(3) METADATA,\n"
-                                + "  `leader-epoch` INT METADATA VIRTUAL,\n"
-                                + "  `headers` MAP<STRING, BYTES> METADATA,\n"
-                                + "  `partition` INT METADATA VIRTUAL,\n"
-                                + "  `topic` STRING METADATA VIRTUAL,\n"
-                                + "  `physical_3` BOOLEAN\n"
-                                + ") WITH (\n"
-                                + "  'connector' = 'kafka',\n"
-                                + "  'topic' = '%s',\n"
-                                + "  'properties.bootstrap.servers' = '%s',\n"
-                                + "  'properties.group.id' = '%s',\n"
-                                + "  'scan.startup.mode' = 'earliest-offset',\n"
-                                + "  %s\n"
-                                + ")",
+                        + "  `physical_1` STRING,\n"
+                        + "  `physical_2` INT,\n"
+                        // metadata fields are out of order on purpose
+                        // offset is ignored because it might not be deterministic
+                        + "  `timestamp-type` STRING METADATA VIRTUAL,\n"
+                        + "  `timestamp` TIMESTAMP(3) METADATA,\n"
+                        + "  `leader-epoch` INT METADATA VIRTUAL,\n"
+                        + "  `headers` MAP<STRING, BYTES> METADATA,\n"
+                        + "  `partition` INT METADATA VIRTUAL,\n"
+                        + "  `topic` STRING METADATA VIRTUAL,\n"
+                        + "  `physical_3` BOOLEAN\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'kafka',\n"
+                        + "  'topic' = '%s',\n"
+                        + "  'properties.bootstrap.servers' = '%s',\n"
+                        + "  'properties.group.id' = '%s',\n"
+                        + "  'scan.startup.mode' = 'earliest-offset',\n"
+                        + "  %s\n"
+                        + ")",
                         topic, bootstraps, groupId, formatOptions());
         tEnv.executeSql(createTable);
 
         String initialValues =
                 "INSERT INTO kafka\n"
-                        + "VALUES\n"
-                        + " ('data 1', 1, TIMESTAMP '2020-03-08 13:12:11.123', MAP['k1', X'C0FFEE', 'k2', X'BABE01'], TRUE),\n"
-                        + " ('data 2', 2, TIMESTAMP '2020-03-09 13:12:11.123', CAST(NULL AS MAP<STRING, BYTES>), FALSE),\n"
-                        + " ('data 3', 3, TIMESTAMP '2020-03-10 13:12:11.123', MAP['k1', X'102030', 'k2', X'203040'], TRUE)";
+                + "VALUES\n"
+                + " ('data 1', 1, TIMESTAMP '2020-03-08 13:12:11.123', MAP['k1', X'C0FFEE', 'k2', X'BABE01'], TRUE),\n"
+                + " ('data 2', 2, TIMESTAMP '2020-03-09 13:12:11.123', CAST(NULL AS MAP<STRING, BYTES>), FALSE),\n"
+                + " ('data 3', 3, TIMESTAMP '2020-03-10 13:12:11.123', MAP['k1', X'102030', 'k2', X'203040'], TRUE)";
         tEnv.executeSql(initialValues).await();
 
         // ---------- Consume stream from Kafka -------------------
@@ -500,34 +563,34 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         final String createTable =
                 String.format(
                         "CREATE TABLE kafka (\n"
-                                + "  `k_user_id` BIGINT,\n"
-                                + "  `name` STRING,\n"
-                                + "  `timestamp` TIMESTAMP(3) METADATA,\n"
-                                + "  `k_event_id` BIGINT,\n"
-                                + "  `user_id` INT,\n"
-                                + "  `payload` STRING\n"
-                                + ") WITH (\n"
-                                + "  'connector' = 'kafka',\n"
-                                + "  'topic' = '%s',\n"
-                                + "  'properties.bootstrap.servers' = '%s',\n"
-                                + "  'properties.group.id' = '%s',\n"
-                                + "  'scan.startup.mode' = 'earliest-offset',\n"
-                                + "  'key.format' = '%s',\n"
-                                + "  'key.fields' = 'k_event_id; k_user_id',\n"
-                                + "  'key.fields-prefix' = 'k_',\n"
-                                + "  'value.format' = '%s',\n"
-                                + "  'value.fields-include' = 'EXCEPT_KEY'\n"
-                                + ")",
+                        + "  `k_user_id` BIGINT,\n"
+                        + "  `name` STRING,\n"
+                        + "  `timestamp` TIMESTAMP(3) METADATA,\n"
+                        + "  `k_event_id` BIGINT,\n"
+                        + "  `user_id` INT,\n"
+                        + "  `payload` STRING\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'kafka',\n"
+                        + "  'topic' = '%s',\n"
+                        + "  'properties.bootstrap.servers' = '%s',\n"
+                        + "  'properties.group.id' = '%s',\n"
+                        + "  'scan.startup.mode' = 'earliest-offset',\n"
+                        + "  'key.format' = '%s',\n"
+                        + "  'key.fields' = 'k_event_id; k_user_id',\n"
+                        + "  'key.fields-prefix' = 'k_',\n"
+                        + "  'value.format' = '%s',\n"
+                        + "  'value.fields-include' = 'EXCEPT_KEY'\n"
+                        + ")",
                         topic, bootstraps, groupId, format, format);
 
         tEnv.executeSql(createTable);
 
         String initialValues =
                 "INSERT INTO kafka\n"
-                        + "VALUES\n"
-                        + " (1, 'name 1', TIMESTAMP '2020-03-08 13:12:11.123', 100, 41, 'payload 1'),\n"
-                        + " (2, 'name 2', TIMESTAMP '2020-03-09 13:12:11.123', 101, 42, 'payload 2'),\n"
-                        + " (3, 'name 3', TIMESTAMP '2020-03-10 13:12:11.123', 102, 43, 'payload 3')";
+                + "VALUES\n"
+                + " (1, 'name 1', TIMESTAMP '2020-03-08 13:12:11.123', 100, 41, 'payload 1'),\n"
+                + " (2, 'name 2', TIMESTAMP '2020-03-09 13:12:11.123', 101, 42, 'payload 2'),\n"
+                + " (3, 'name 3', TIMESTAMP '2020-03-10 13:12:11.123', 102, 43, 'payload 3')";
         tEnv.executeSql(initialValues).await();
 
         // ---------- Consume stream from Kafka -------------------
@@ -583,32 +646,32 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         final String createTable =
                 String.format(
                         "CREATE TABLE kafka (\n"
-                                + "  `user_id` BIGINT,\n"
-                                + "  `name` STRING,\n"
-                                + "  `timestamp` TIMESTAMP(3) METADATA,\n"
-                                + "  `event_id` BIGINT,\n"
-                                + "  `payload` STRING\n"
-                                + ") WITH (\n"
-                                + "  'connector' = 'kafka',\n"
-                                + "  'topic' = '%s',\n"
-                                + "  'properties.bootstrap.servers' = '%s',\n"
-                                + "  'properties.group.id' = '%s',\n"
-                                + "  'scan.startup.mode' = 'earliest-offset',\n"
-                                + "  'key.format' = '%s',\n"
-                                + "  'key.fields' = 'event_id; user_id',\n"
-                                + "  'value.format' = '%s',\n"
-                                + "  'value.fields-include' = 'ALL'\n"
-                                + ")",
+                        + "  `user_id` BIGINT,\n"
+                        + "  `name` STRING,\n"
+                        + "  `timestamp` TIMESTAMP(3) METADATA,\n"
+                        + "  `event_id` BIGINT,\n"
+                        + "  `payload` STRING\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'kafka',\n"
+                        + "  'topic' = '%s',\n"
+                        + "  'properties.bootstrap.servers' = '%s',\n"
+                        + "  'properties.group.id' = '%s',\n"
+                        + "  'scan.startup.mode' = 'earliest-offset',\n"
+                        + "  'key.format' = '%s',\n"
+                        + "  'key.fields' = 'event_id; user_id',\n"
+                        + "  'value.format' = '%s',\n"
+                        + "  'value.fields-include' = 'ALL'\n"
+                        + ")",
                         topic, bootstraps, groupId, format, format);
 
         tEnv.executeSql(createTable);
 
         String initialValues =
                 "INSERT INTO kafka\n"
-                        + "VALUES\n"
-                        + " (1, 'name 1', TIMESTAMP '2020-03-08 13:12:11.123', 100, 'payload 1'),\n"
-                        + " (2, 'name 2', TIMESTAMP '2020-03-09 13:12:11.123', 101, 'payload 2'),\n"
-                        + " (3, 'name 3', TIMESTAMP '2020-03-10 13:12:11.123', 102, 'payload 3')";
+                + "VALUES\n"
+                + " (1, 'name 1', TIMESTAMP '2020-03-08 13:12:11.123', 100, 'payload 1'),\n"
+                + " (2, 'name 2', TIMESTAMP '2020-03-09 13:12:11.123', 101, 'payload 2'),\n"
+                + " (3, 'name 3', TIMESTAMP '2020-03-10 13:12:11.123', 102, 'payload 3')";
         tEnv.executeSql(initialValues).await();
 
         // ---------- Consume stream from Kafka -------------------
@@ -668,52 +731,52 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         final String orderTableDDL =
                 String.format(
                         "CREATE TABLE ordersTable (\n"
-                                + "  order_id STRING,\n"
-                                + "  product_id STRING,\n"
-                                + "  order_time TIMESTAMP(3),\n"
-                                + "  quantity INT,\n"
-                                + "  purchaser STRING,\n"
-                                + "  WATERMARK FOR order_time AS order_time - INTERVAL '1' SECOND\n"
-                                + ") WITH (\n"
-                                + "  'connector' = 'kafka',\n"
-                                + "  'topic' = '%s',\n"
-                                + "  'scan.startup.mode' = 'earliest-offset',\n"
-                                + "  'properties.bootstrap.servers' = '%s',\n"
-                                + "  'properties.group.id' = '%s',\n"
-                                + "  'format' = '%s'\n"
-                                + ")",
+                        + "  order_id STRING,\n"
+                        + "  product_id STRING,\n"
+                        + "  order_time TIMESTAMP(3),\n"
+                        + "  quantity INT,\n"
+                        + "  purchaser STRING,\n"
+                        + "  WATERMARK FOR order_time AS order_time - INTERVAL '1' SECOND\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'kafka',\n"
+                        + "  'topic' = '%s',\n"
+                        + "  'scan.startup.mode' = 'earliest-offset',\n"
+                        + "  'properties.bootstrap.servers' = '%s',\n"
+                        + "  'properties.group.id' = '%s',\n"
+                        + "  'format' = '%s'\n"
+                        + ")",
                         orderTopic, bootstraps, groupId, format);
         tEnv.executeSql(orderTableDDL);
         String orderInitialValues =
                 "INSERT INTO ordersTable\n"
-                        + "VALUES\n"
-                        + "('o_001', 'p_001', TIMESTAMP '2020-10-01 00:01:00', 1, 'Alice'),"
-                        + "('o_002', 'p_002', TIMESTAMP '2020-10-01 00:02:00', 1, 'Bob'),"
-                        + "('o_003', 'p_001', TIMESTAMP '2020-10-01 12:00:00', 2, 'Tom'),"
-                        + "('o_004', 'p_002', TIMESTAMP '2020-10-01 12:00:00', 2, 'King'),"
-                        + "('o_005', 'p_001', TIMESTAMP '2020-10-01 18:00:00', 10, 'Leonard'),"
-                        + "('o_006', 'p_002', TIMESTAMP '2020-10-01 18:00:00', 10, 'Leonard'),"
-                        + "('o_007', 'p_002', TIMESTAMP '2020-10-01 18:00:01', 10, 'Robinson')"; // used to advance watermark
+                + "VALUES\n"
+                + "('o_001', 'p_001', TIMESTAMP '2020-10-01 00:01:00', 1, 'Alice'),"
+                + "('o_002', 'p_002', TIMESTAMP '2020-10-01 00:02:00', 1, 'Bob'),"
+                + "('o_003', 'p_001', TIMESTAMP '2020-10-01 12:00:00', 2, 'Tom'),"
+                + "('o_004', 'p_002', TIMESTAMP '2020-10-01 12:00:00', 2, 'King'),"
+                + "('o_005', 'p_001', TIMESTAMP '2020-10-01 18:00:00', 10, 'Leonard'),"
+                + "('o_006', 'p_002', TIMESTAMP '2020-10-01 18:00:00', 10, 'Leonard'),"
+                + "('o_007', 'p_002', TIMESTAMP '2020-10-01 18:00:01', 10, 'Robinson')"; // used to advance watermark
         tEnv.executeSql(orderInitialValues).await();
 
         // create product table and set initial values
         final String productTableDDL =
                 String.format(
                         "CREATE TABLE productChangelogTable (\n"
-                                + "  product_id STRING,\n"
-                                + "  product_name STRING,\n"
-                                + "  product_price DECIMAL(10, 4),\n"
-                                + "  update_time TIMESTAMP(3) METADATA FROM 'value.source.timestamp' VIRTUAL,\n"
-                                + "  PRIMARY KEY(product_id) NOT ENFORCED,\n"
-                                + "  WATERMARK FOR update_time AS update_time - INTERVAL '1' SECOND\n"
-                                + ") WITH (\n"
-                                + "  'connector' = 'kafka',\n"
-                                + "  'topic' = '%s',\n"
-                                + "  'scan.startup.mode' = 'earliest-offset',\n"
-                                + "  'properties.bootstrap.servers' = '%s',\n"
-                                + "  'properties.group.id' = '%s',\n"
-                                + "  'value.format' = 'debezium-json'\n"
-                                + ")",
+                        + "  product_id STRING,\n"
+                        + "  product_name STRING,\n"
+                        + "  product_price DECIMAL(10, 4),\n"
+                        + "  update_time TIMESTAMP(3) METADATA FROM 'value.source.timestamp' VIRTUAL,\n"
+                        + "  PRIMARY KEY(product_id) NOT ENFORCED,\n"
+                        + "  WATERMARK FOR update_time AS update_time - INTERVAL '1' SECOND\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'kafka',\n"
+                        + "  'topic' = '%s',\n"
+                        + "  'scan.startup.mode' = 'earliest-offset',\n"
+                        + "  'properties.bootstrap.servers' = '%s',\n"
+                        + "  'properties.group.id' = '%s',\n"
+                        + "  'value.format' = 'debezium-json'\n"
+                        + ")",
                         productTopic, bootstraps, groupId);
         tEnv.executeSql(productTableDDL);
 
@@ -723,21 +786,21 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         // ---------- query temporal join result from Kafka -------------------
         final List<String> result =
                 collectRows(
-                                tEnv.sqlQuery(
-                                        "SELECT"
-                                                + "  order_id,"
-                                                + "  order_time,"
-                                                + "  P.product_id,"
-                                                + "  P.update_time as product_update_time,"
-                                                + "  product_price,"
-                                                + "  purchaser,"
-                                                + "  product_name,"
-                                                + "  quantity,"
-                                                + "  quantity * product_price AS order_amount "
-                                                + "FROM ordersTable AS O "
-                                                + "LEFT JOIN productChangelogTable FOR SYSTEM_TIME AS OF O.order_time AS P "
-                                                + "ON O.product_id = P.product_id"),
-                                6)
+                        tEnv.sqlQuery(
+                                "SELECT"
+                                + "  order_id,"
+                                + "  order_time,"
+                                + "  P.product_id,"
+                                + "  P.update_time as product_update_time,"
+                                + "  product_price,"
+                                + "  purchaser,"
+                                + "  product_name,"
+                                + "  quantity,"
+                                + "  quantity * product_price AS order_amount "
+                                + "FROM ordersTable AS O "
+                                + "LEFT JOIN productChangelogTable FOR SYSTEM_TIME AS OF O.order_time AS P "
+                                + "ON O.product_id = P.product_id"),
+                        6)
                         .stream()
                         .map(row -> row.toString())
                         .sorted()
@@ -764,14 +827,14 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         String productChangelogDDL =
                 String.format(
                         "CREATE TABLE productChangelog (\n"
-                                + "  changelog STRING"
-                                + ") WITH (\n"
-                                + "  'connector' = 'kafka',\n"
-                                + "  'topic' = '%s',\n"
-                                + "  'scan.startup.mode' = 'earliest-offset',\n"
-                                + "  'properties.bootstrap.servers' = '%s',\n"
-                                + "  'format' = 'raw'\n"
-                                + ")",
+                        + "  changelog STRING"
+                        + ") WITH (\n"
+                        + "  'connector' = 'kafka',\n"
+                        + "  'topic' = '%s',\n"
+                        + "  'scan.startup.mode' = 'earliest-offset',\n"
+                        + "  'properties.bootstrap.servers' = '%s',\n"
+                        + "  'format' = 'raw'\n"
+                        + ")",
                         topic, bootstraps);
         tEnv.executeSql(productChangelogDDL);
         String[] allChangelog = readLines("product_changelog.txt").toArray(new String[0]);
@@ -800,19 +863,19 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         final String createTable =
                 String.format(
                         "CREATE TABLE kafka (\n"
-                                + "  `partition_id` INT,\n"
-                                + "  `name` STRING,\n"
-                                + "  `timestamp` TIMESTAMP(3),\n"
-                                + "  WATERMARK FOR `timestamp` AS `timestamp`\n"
-                                + ") WITH (\n"
-                                + "  'connector' = 'kafka',\n"
-                                + "  'topic' = '%s',\n"
-                                + "  'properties.bootstrap.servers' = '%s',\n"
-                                + "  'properties.group.id' = '%s',\n"
-                                + "  'scan.startup.mode' = 'earliest-offset',\n"
-                                + "  'sink.partitioner' = '%s',\n"
-                                + "  'format' = '%s'\n"
-                                + ")",
+                        + "  `partition_id` INT,\n"
+                        + "  `name` STRING,\n"
+                        + "  `timestamp` TIMESTAMP(3),\n"
+                        + "  WATERMARK FOR `timestamp` AS `timestamp`\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'kafka',\n"
+                        + "  'topic' = '%s',\n"
+                        + "  'properties.bootstrap.servers' = '%s',\n"
+                        + "  'properties.group.id' = '%s',\n"
+                        + "  'scan.startup.mode' = 'earliest-offset',\n"
+                        + "  'sink.partitioner' = '%s',\n"
+                        + "  'format' = '%s'\n"
+                        + ")",
                         topic, bootstraps, groupId, TestPartitioner.class.getName(), format);
 
         tEnv.executeSql(createTable);
@@ -820,21 +883,21 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         // make every partition have more than one record
         String initialValues =
                 "INSERT INTO kafka\n"
-                        + "VALUES\n"
-                        + " (0, 'partition-0-name-0', TIMESTAMP '2020-03-08 13:12:11.123'),\n"
-                        + " (0, 'partition-0-name-1', TIMESTAMP '2020-03-08 14:12:12.223'),\n"
-                        + " (0, 'partition-0-name-2', TIMESTAMP '2020-03-08 15:12:13.323'),\n"
-                        + " (1, 'partition-1-name-0', TIMESTAMP '2020-03-09 13:13:11.123'),\n"
-                        + " (1, 'partition-1-name-1', TIMESTAMP '2020-03-09 15:13:11.133'),\n"
-                        + " (1, 'partition-1-name-2', TIMESTAMP '2020-03-09 16:13:11.143'),\n"
-                        + " (2, 'partition-2-name-0', TIMESTAMP '2020-03-10 13:12:14.123'),\n"
-                        + " (2, 'partition-2-name-1', TIMESTAMP '2020-03-10 14:12:14.123'),\n"
-                        + " (2, 'partition-2-name-2', TIMESTAMP '2020-03-10 14:13:14.123'),\n"
-                        + " (2, 'partition-2-name-3', TIMESTAMP '2020-03-10 14:14:14.123'),\n"
-                        + " (2, 'partition-2-name-4', TIMESTAMP '2020-03-10 14:15:14.123'),\n"
-                        + " (2, 'partition-2-name-5', TIMESTAMP '2020-03-10 14:16:14.123'),\n"
-                        + " (3, 'partition-3-name-0', TIMESTAMP '2020-03-11 17:12:11.123'),\n"
-                        + " (3, 'partition-3-name-1', TIMESTAMP '2020-03-11 18:12:11.123')";
+                + "VALUES\n"
+                + " (0, 'partition-0-name-0', TIMESTAMP '2020-03-08 13:12:11.123'),\n"
+                + " (0, 'partition-0-name-1', TIMESTAMP '2020-03-08 14:12:12.223'),\n"
+                + " (0, 'partition-0-name-2', TIMESTAMP '2020-03-08 15:12:13.323'),\n"
+                + " (1, 'partition-1-name-0', TIMESTAMP '2020-03-09 13:13:11.123'),\n"
+                + " (1, 'partition-1-name-1', TIMESTAMP '2020-03-09 15:13:11.133'),\n"
+                + " (1, 'partition-1-name-2', TIMESTAMP '2020-03-09 16:13:11.143'),\n"
+                + " (2, 'partition-2-name-0', TIMESTAMP '2020-03-10 13:12:14.123'),\n"
+                + " (2, 'partition-2-name-1', TIMESTAMP '2020-03-10 14:12:14.123'),\n"
+                + " (2, 'partition-2-name-2', TIMESTAMP '2020-03-10 14:13:14.123'),\n"
+                + " (2, 'partition-2-name-3', TIMESTAMP '2020-03-10 14:14:14.123'),\n"
+                + " (2, 'partition-2-name-4', TIMESTAMP '2020-03-10 14:15:14.123'),\n"
+                + " (2, 'partition-2-name-5', TIMESTAMP '2020-03-10 14:16:14.123'),\n"
+                + " (3, 'partition-3-name-0', TIMESTAMP '2020-03-11 17:12:11.123'),\n"
+                + " (3, 'partition-3-name-1', TIMESTAMP '2020-03-11 18:12:11.123')";
         tEnv.executeSql(initialValues).await();
 
         // ---------- Consume stream from Kafka -------------------
@@ -842,14 +905,14 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         env.setParallelism(1);
         String createSink =
                 "CREATE TABLE MySink(\n"
-                        + "  id INT,\n"
-                        + "  name STRING,\n"
-                        + "  ts TIMESTAMP(3),\n"
-                        + "  WATERMARK FOR ts as ts\n"
-                        + ") WITH (\n"
-                        + "  'connector' = 'values',\n"
-                        + "  'sink.drop-late-event' = 'true'\n"
-                        + ")";
+                + "  id INT,\n"
+                + "  name STRING,\n"
+                + "  ts TIMESTAMP(3),\n"
+                + "  WATERMARK FOR ts as ts\n"
+                + ") WITH (\n"
+                + "  'connector' = 'values',\n"
+                + "  'sink.drop-late-event' = 'true'\n"
+                + ")";
         tEnv.executeSql(createSink);
         TableResult tableResult = tEnv.executeSql("INSERT INTO MySink SELECT * FROM kafka");
         final List<String> expected =
@@ -891,19 +954,19 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         final String createTable =
                 String.format(
                         "CREATE TABLE kafka (\n"
-                                + "  `partition_id` INT,\n"
-                                + "  `value` INT,\n"
-                                + "  `timestamp` TIMESTAMP(3),\n"
-                                + "  WATERMARK FOR `timestamp` AS `timestamp`\n"
-                                + ") WITH (\n"
-                                + "  'connector' = 'kafka',\n"
-                                + "  'topic' = '%s',\n"
-                                + "  'properties.bootstrap.servers' = '%s',\n"
-                                + "  'properties.group.id' = '%s',\n"
-                                + "  'scan.startup.mode' = 'earliest-offset',\n"
-                                + "  'sink.partitioner' = '%s',\n"
-                                + "  'format' = '%s'\n"
-                                + ")",
+                        + "  `partition_id` INT,\n"
+                        + "  `value` INT,\n"
+                        + "  `timestamp` TIMESTAMP(3),\n"
+                        + "  WATERMARK FOR `timestamp` AS `timestamp`\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'kafka',\n"
+                        + "  'topic' = '%s',\n"
+                        + "  'properties.bootstrap.servers' = '%s',\n"
+                        + "  'properties.group.id' = '%s',\n"
+                        + "  'scan.startup.mode' = 'earliest-offset',\n"
+                        + "  'sink.partitioner' = '%s',\n"
+                        + "  'format' = '%s'\n"
+                        + ")",
                         topic, bootstraps, groupId, TestPartitioner.class.getName(), format);
 
         tEnv.executeSql(createTable);
@@ -915,13 +978,13 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         // trigger the window.
         String initialValues =
                 "INSERT INTO kafka\n"
-                        + "VALUES\n"
-                        + " (0, 0, TIMESTAMP '2020-03-08 13:12:11.123'),\n"
-                        + " (0, 1, TIMESTAMP '2020-03-08 13:15:12.223'),\n"
-                        + " (0, 2, TIMESTAMP '2020-03-08 16:12:13.323'),\n"
-                        + " (1, 3, TIMESTAMP '2020-03-08 13:13:11.123'),\n"
-                        + " (1, 4, TIMESTAMP '2020-03-08 13:19:11.133'),\n"
-                        + " (1, 5, TIMESTAMP '2020-03-08 16:13:11.143')\n";
+                + "VALUES\n"
+                + " (0, 0, TIMESTAMP '2020-03-08 13:12:11.123'),\n"
+                + " (0, 1, TIMESTAMP '2020-03-08 13:15:12.223'),\n"
+                + " (0, 2, TIMESTAMP '2020-03-08 16:12:13.323'),\n"
+                + " (1, 3, TIMESTAMP '2020-03-08 13:13:11.123'),\n"
+                + " (1, 4, TIMESTAMP '2020-03-08 13:19:11.133'),\n"
+                + " (1, 5, TIMESTAMP '2020-03-08 16:13:11.143')\n";
         tEnv.executeSql(initialValues).await();
 
         // ---------- Consume stream from Kafka -------------------
@@ -929,18 +992,18 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         env.setParallelism(1);
         String createSink =
                 "CREATE TABLE MySink(\n"
-                        + "  `id` INT,\n"
-                        + "  `cnt` BIGINT\n"
-                        + ") WITH (\n"
-                        + "  'connector' = 'values'\n"
-                        + ")";
+                + "  `id` INT,\n"
+                + "  `cnt` BIGINT\n"
+                + ") WITH (\n"
+                + "  'connector' = 'values'\n"
+                + ")";
         tEnv.executeSql(createSink);
         TableResult tableResult =
                 tEnv.executeSql(
                         "INSERT INTO MySink\n"
-                                + "SELECT `partition_id` as `id`, COUNT(`value`) as `cnt`\n"
-                                + "FROM kafka\n"
-                                + "GROUP BY `partition_id`, TUMBLE(`timestamp`, INTERVAL '1' HOUR) ");
+                        + "SELECT `partition_id` as `id`, COUNT(`value`) as `cnt`\n"
+                        + "FROM kafka\n"
+                        + "GROUP BY `partition_id`, TUMBLE(`timestamp`, INTERVAL '1' HOUR) ");
 
         final List<String> expected = Arrays.asList("+I[0, 2]", "+I[1, 2]");
         KafkaTableTestUtils.waitingExpectedResults("MySink", expected, Duration.ofSeconds(5));
@@ -967,17 +1030,17 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         final String createTable =
                 String.format(
                         "CREATE TABLE kafka (\n"
-                                + "  `partition_id` INT,\n"
-                                + "  `value` INT\n"
-                                + ") WITH (\n"
-                                + "  'connector' = 'kafka',\n"
-                                + "  'topic' = '%s',\n"
-                                + "  'properties.bootstrap.servers' = '%s',\n"
-                                + "  'properties.group.id' = '%s',\n"
-                                + "  'scan.startup.mode' = 'latest-offset',\n"
-                                + "  'sink.partitioner' = '%s',\n"
-                                + "  'format' = '%s'\n"
-                                + ")",
+                        + "  `partition_id` INT,\n"
+                        + "  `value` INT\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'kafka',\n"
+                        + "  'topic' = '%s',\n"
+                        + "  'properties.bootstrap.servers' = '%s',\n"
+                        + "  'properties.group.id' = '%s',\n"
+                        + "  'scan.startup.mode' = 'latest-offset',\n"
+                        + "  'sink.partitioner' = '%s',\n"
+                        + "  'format' = '%s'\n"
+                        + ")",
                         topic, bootstraps, groupId, TestPartitioner.class.getName(), format);
 
         tEnv.executeSql(createTable);
@@ -990,11 +1053,11 @@ public class KafkaTableITCase extends KafkaTableTestBase {
 
         String createSink =
                 "CREATE TABLE MySink(\n"
-                        + "  `id` INT,\n"
-                        + "  `value` INT\n"
-                        + ") WITH (\n"
-                        + "  'connector' = 'values'\n"
-                        + ")";
+                + "  `id` INT,\n"
+                + "  `value` INT\n"
+                + ") WITH (\n"
+                + "  'connector' = 'values'\n"
+                + ")";
         tEnv.executeSql(createSink);
 
         String executeInsert = "INSERT INTO MySink SELECT `partition_id`, `value` FROM kafka";
@@ -1015,7 +1078,7 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         JobClient client = tableResult.getJobClient().get();
         String savepointPath =
                 client.stopWithSavepoint(false, savepointBasePath, SavepointFormatType.DEFAULT)
-                        .get();
+                      .get();
 
         // ---------- Produce data into Kafka's partition 0-5 -------------------
 
@@ -1096,7 +1159,7 @@ public class KafkaTableITCase extends KafkaTableTestBase {
     @Test
     public void testStartFromGroupOffsetsNone() {
         Assertions.assertThatThrownBy(() -> testStartFromGroupOffsetsWithNoneResetStrategy())
-                .satisfies(FlinkAssertions.anyCauseMatches(NoOffsetForPartitionException.class));
+                  .satisfies(FlinkAssertions.anyCauseMatches(NoOffsetForPartitionException.class));
     }
 
     private List<String> appendNewData(
@@ -1106,21 +1169,21 @@ public class KafkaTableITCase extends KafkaTableTestBase {
                     Map<TopicPartition, OffsetAndMetadata> offsets = getConsumerOffset(groupId);
                     long sum =
                             offsets.entrySet().stream()
-                                    .filter(e -> e.getKey().topic().contains(topic))
-                                    .mapToLong(e -> e.getValue().offset())
-                                    .sum();
+                                   .filter(e -> e.getKey().topic().contains(topic))
+                                   .mapToLong(e -> e.getValue().offset())
+                                   .sum();
                     return sum == targetNum;
                 },
                 Duration.ofMillis(20000),
                 "Can not reach the expected offset before adding new data.");
         String appendValues =
                 "INSERT INTO "
-                        + tableName
-                        + "\n"
-                        + "VALUES\n"
-                        + " (2, 6),\n"
-                        + " (2, 7),\n"
-                        + " (2, 8)\n";
+                + tableName
+                + "\n"
+                + "VALUES\n"
+                + " (2, 6),\n"
+                + " (2, 7),\n"
+                + " (2, 8)\n";
         tEnv.executeSql(appendValues).await();
         return Arrays.asList("+I[2, 6]", "+I[2, 7]", "+I[2, 8]");
     }
@@ -1138,19 +1201,19 @@ public class KafkaTableITCase extends KafkaTableTestBase {
 
         final String createTableSql =
                 "CREATE TABLE %s (\n"
-                        + "  `partition_id` INT,\n"
-                        + "  `value` INT\n"
-                        + ") WITH (\n"
-                        + "  'connector' = 'kafka',\n"
-                        + "  'topic' = '%s',\n"
-                        + "  'properties.bootstrap.servers' = '%s',\n"
-                        + "  'properties.group.id' = '%s',\n"
-                        + "  'scan.startup.mode' = 'group-offsets',\n"
-                        + "  'properties.auto.offset.reset' = '%s',\n"
-                        + "  'properties.enable.auto.commit' = 'true',\n"
-                        + "  'properties.auto.commit.interval.ms' = '1000',\n"
-                        + "  'format' = '%s'\n"
-                        + ")";
+                + "  `partition_id` INT,\n"
+                + "  `value` INT\n"
+                + ") WITH (\n"
+                + "  'connector' = 'kafka',\n"
+                + "  'topic' = '%s',\n"
+                + "  'properties.bootstrap.servers' = '%s',\n"
+                + "  'properties.group.id' = '%s',\n"
+                + "  'scan.startup.mode' = 'group-offsets',\n"
+                + "  'properties.auto.offset.reset' = '%s',\n"
+                + "  'properties.enable.auto.commit' = 'true',\n"
+                + "  'properties.auto.commit.interval.ms' = '1000',\n"
+                + "  'format' = '%s'\n"
+                + ")";
         tEnv.executeSql(
                 String.format(
                         createTableSql,
@@ -1163,15 +1226,15 @@ public class KafkaTableITCase extends KafkaTableTestBase {
 
         String initialValues =
                 "INSERT INTO "
-                        + tableName
-                        + "\n"
-                        + "VALUES\n"
-                        + " (0, 0),\n"
-                        + " (0, 1),\n"
-                        + " (0, 2),\n"
-                        + " (1, 3),\n"
-                        + " (1, 4),\n"
-                        + " (1, 5)\n";
+                + tableName
+                + "\n"
+                + "VALUES\n"
+                + " (0, 0),\n"
+                + " (0, 1),\n"
+                + " (0, 2),\n"
+                + " (1, 3),\n"
+                + " (1, 4),\n"
+                + " (1, 5)\n";
         tEnv.executeSql(initialValues).await();
 
         // ---------- Consume stream from Kafka -------------------
@@ -1179,13 +1242,13 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         env.setParallelism(1);
         String createSink =
                 "CREATE TABLE "
-                        + sinkName
-                        + "(\n"
-                        + "  `partition_id` INT,\n"
-                        + "  `value` INT\n"
-                        + ") WITH (\n"
-                        + "  'connector' = 'values'\n"
-                        + ")";
+                + sinkName
+                + "(\n"
+                + "  `partition_id` INT,\n"
+                + "  `value` INT\n"
+                + ") WITH (\n"
+                + "  'connector' = 'values'\n"
+                + ")";
         tEnv.executeSql(createSink);
 
         return tEnv.executeSql("INSERT INTO " + sinkName + " SELECT * FROM " + tableName);

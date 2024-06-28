@@ -26,14 +26,18 @@ import org.apache.flink.test.util.AbstractTestBase;
 
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.Config;
 import org.apache.kafka.clients.admin.ListConsumerGroupOffsetsResult;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.admin.RecordsToDelete;
 import org.apache.kafka.clients.admin.TopicDescription;
 import org.apache.kafka.clients.admin.TopicListing;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.config.ConfigResource;
+import org.apache.kafka.common.config.ConfigResource.Type;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.After;
 import org.junit.Before;
@@ -53,6 +57,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 
 /** Base class for Kafka Table IT Cases. */
@@ -74,12 +79,12 @@ public abstract class KafkaTableTestBase extends AbstractTestBase {
                     }
                 }
             }.withEmbeddedZookeeper()
-                    .withNetworkAliases(INTER_CONTAINER_KAFKA_ALIAS)
-                    .withEnv(
-                            "KAFKA_TRANSACTION_MAX_TIMEOUT_MS",
-                            String.valueOf(Duration.ofHours(2).toMillis()))
-                    // Disable log deletion to prevent records from being deleted during test run
-                    .withEnv("KAFKA_LOG_RETENTION_MS", "-1");
+             .withNetworkAliases(INTER_CONTAINER_KAFKA_ALIAS)
+             .withEnv(
+                     "KAFKA_TRANSACTION_MAX_TIMEOUT_MS",
+                     String.valueOf(Duration.ofHours(2).toMillis()))
+             // Disable log deletion to prevent records from being deleted during test run
+             .withEnv("KAFKA_LOG_RETENTION_MS", "-1");
 
     protected StreamExecutionEnvironment env;
     protected StreamTableEnvironment tEnv;
@@ -134,10 +139,49 @@ public abstract class KafkaTableTestBase extends AbstractTestBase {
         properties.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, getBootstrapServers());
         try (AdminClient admin = AdminClient.create(properties)) {
             admin.createTopics(
-                            Collections.singletonList(
-                                    new NewTopic(topic, numPartitions, (short) replicationFactor)))
-                    .all()
-                    .get();
+                         Collections.singletonList(
+                                 new NewTopic(topic, numPartitions, (short) replicationFactor)))
+                 .all()
+                 .get();
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    String.format(
+                            "Fail to create topic [%s partitions: %d replication factor: %d].",
+                            topic, numPartitions, replicationFactor),
+                    e);
+        }
+    }
+
+    public void deleteRecords(String topic, Map<Integer, Long> deleteInfo) {
+        Map<String, Object> properties = new HashMap<>();
+        properties.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, getBootstrapServers());
+
+        try (AdminClient admin = AdminClient.create(properties)) {
+            Map<TopicPartition, RecordsToDelete> recordsToDelete = new HashMap<>();
+            for (Map.Entry<Integer, Long> entry : deleteInfo.entrySet()) {
+                TopicPartition partition = new TopicPartition(topic, entry.getKey());
+                RecordsToDelete records = RecordsToDelete.beforeOffset(entry.getValue());
+                recordsToDelete.put(partition, records);
+            }
+            admin.deleteRecords(recordsToDelete).all().get();
+            System.out.println("Records deleted successfully.");
+        } catch (Exception e) {
+            System.out.println("Exception: " + e);
+            throw new IllegalStateException("Fail to delete records");
+        }
+    }
+
+    public void createTestTopicWithConfigs(String topic, int numPartitions, int replicationFactor,
+                                           Map<String, String> topicConfigs) {
+        Map<String, Object> properties = new HashMap<>();
+        properties.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, getBootstrapServers());
+        try (AdminClient admin = AdminClient.create(properties)) {
+            admin.createTopics(
+                         Collections.singletonList(
+                                 new NewTopic(topic, numPartitions, (short) replicationFactor).configs(
+                                         topicConfigs)))
+                 .all()
+                 .get();
         } catch (Exception e) {
             throw new IllegalStateException(
                     String.format(
@@ -195,9 +239,9 @@ public abstract class KafkaTableTestBase extends AbstractTestBase {
         try (final AdminClient adminClient = AdminClient.create(getStandardProps())) {
             final List<String> topics =
                     adminClient.listTopics().listings().get().stream()
-                            .filter(listing -> !listing.isInternal())
-                            .map(TopicListing::name)
-                            .collect(Collectors.toList());
+                               .filter(listing -> !listing.isInternal())
+                               .map(TopicListing::name)
+                               .collect(Collectors.toList());
 
             return adminClient.describeTopics(topics).allTopicNames().get();
         } catch (Exception e) {
