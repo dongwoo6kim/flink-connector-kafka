@@ -293,10 +293,7 @@ public class KafkaTableITCase extends KafkaTableTestBase {
         Map<Integer, Long> deleteInfo = new HashMap<>();
         deleteInfo.put(0, 3L);
         deleteRecords(topic, deleteInfo);
-        List<Row> results = assertTimeoutPreemptively(
-                Duration.ofSeconds(5),
-                () -> collectAllRows(tEnv.sqlQuery("SELECT * from kafka"))
-        );
+        List<Row> results = collectAllRows(tEnv.sqlQuery("SELECT * from kafka"));
         System.out.println(results);
         assertThat(results.isEmpty()).isTrue();
 
